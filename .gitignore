@@ -1,0 +1,27 @@
+# Ambientes virtuais (você já tem, mas garanta que cubra todas as variações)
+.venv/
+venv/
+env/
+ENV/
+
+# Byte-compiled / Python caches (simplificado)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Arquivos de ambiente/segredo (CRÍTICO para não vazar sua GEMINI_API_KEY)
+.env
+
+# Arquivos de vídeo e áudio temporários do seu app
+# Isso impede que o "video_otimizado.mp4" ou downloads do pytube subam
+*.mp4
+*.mp3
+*.m4a
+
+# Logs de erro e saída do sistema
+*.log
+
+# IDEs (se usar VS Code ou PyCharm)
+.vscode/
+.idea/
