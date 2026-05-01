@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from utils.download_video import download_video
+from utils.download import download
 
 app = Flask(__name__)
 
@@ -7,15 +7,15 @@ app = Flask(__name__)
 @app.route("/upload", methods=["POST"])
 def upload():
     body = request.get_json() or {}
+    mode = body.get("mode")
     video_url = body.get("url")
     output_dir = body.get("output_dir")
-    if not video_url:
-        return jsonify({"error": "URL do vídeo não fornecida"}), 400
-    try:
-        ia_response, mp3_path = download_video(video_url, output_dir=output_dir)
-        return jsonify({"response": ia_response, "mp3_path": mp3_path}, 200)
-    except Exception as e:
-        return jsonify({"error": f"Erro ao processar o vídeo: {str(e)}"}), 500
+    
+    if not video_url or not mode:
+        return jsonify({"error": "URL e modo são obrigatórios"}), 400
+    
+    download(video_url, mode)
+    return jsonify({"message": "Download iniciado com sucesso!"}), 200
 
 
 if __name__ == "__main__":
