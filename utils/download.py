@@ -12,15 +12,15 @@ client = genai.Client(api_key=gem_key)
 
 
 def download_video(caminho_arquivo: str):
-    output_file = "video_otimizado.mp4"
+    output_video_file = "video.mp4"
     (
         ffmpeg.input(caminho_arquivo)
-        .output(output_file, vf="scale=-2:360", vcodec="libx264", crf=28)
+        .output(output_video_file, vf="scale=-2:360", vcodec="libx264", crf=28)
         .run(overwrite_output=True)
     )
 
     print("Fazendo upload do vídeo para o Google...")
-    video_upload = client.files.upload(file=output_file)
+    video_upload = client.files.upload(file=output_video_file)
     file_name = video_upload.name
 
     if not file_name:
@@ -34,7 +34,7 @@ def download_video(caminho_arquivo: str):
     if video_upload.state and video_upload.state.name == "FAILED":
         raise Exception("Falha no processamento do vídeo pela IA")
 
-    return video_upload
+    return output_video_file,
 
 
 def download_audio(caminho_arquivo: str):
@@ -44,6 +44,8 @@ def download_audio(caminho_arquivo: str):
         .output(output_audio_file, acodec="libmp3lame", audio_bitrate="192k")
         .run(overwrite_output=True)
     )
+
+    return output_audio_file,
 
 
 def download(url: str, mode: str):
@@ -59,9 +61,9 @@ def download(url: str, mode: str):
 
     try:
         if mode == "video" and caminho_arquivo:
-            download_video(caminho_arquivo)
+            return download_video(caminho_arquivo)
         elif mode == "audio" and caminho_arquivo:
-            download_audio(caminho_arquivo)
+            return download_audio(caminho_arquivo)
     except ffmpeg.Error as e:
         print(f"An error occurred: {e.stderr.decode('utf8')}")
 
