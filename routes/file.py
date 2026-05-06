@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, send_file, Blueprint
-from utils.download import download
+from utils import download
 
 file_bp = Blueprint("file", __name__)
 
