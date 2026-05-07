@@ -15,6 +15,7 @@ __pycache__/
 
 # Arquivos de vídeo e áudio temporários do seu app
 # Isso impede que o "video_otimizado.mp4" ou downloads do pytube subam
+downloads/
 *.mp4
 *.mp3
 *.m4a

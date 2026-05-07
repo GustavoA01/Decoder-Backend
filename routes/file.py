@@ -1,5 +1,6 @@
-from flask import Flask, request, jsonify, send_file, Blueprint
-from utils import download
+from flask import Blueprint, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
+from utils import DOWNLOAD_DIR, download
 
 file_bp = Blueprint("file", __name__)
 
@@ -9,28 +10,34 @@ def upload():
     body = request.get_json() or {}
     mode = body.get("mode")
     url = body.get("url")
-    output_dir = body.get("output_dir")
 
     if not url or not mode:
         return jsonify({"error": "URL e modo são obrigatórios"}), 400
 
-    name = download(url, mode)
-    return jsonify({
-        "status": "success",
-        "message": "Processamento concluído",
-        "filename": name
-    }), 200
+    try:
+        name = download(url, mode)
+        return jsonify({
+            "status": "success",
+            "message": "Processamento concluído",
+            "filename": name
+        }), 200
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print("Erro ao processar download:", error)
+        return jsonify({"error": "Erro interno ao processar o download"}), 500
 
 
 @file_bp.route("/get-file/<filename>")
 def get_file(filename):
-    try:
-        print("Tentando enviar o arquivo:", filename)
-        return send_file(
-            filename,
-            as_attachment=True,
-            download_name=filename
-        )
+    safe_filename = secure_filename(filename)
 
-    except FileNotFoundError:
-        return "Arquivo não encontrado", 404
+    if safe_filename != filename:
+        return jsonify({"error": "Nome de arquivo inválido"}), 400
+
+    return send_from_directory(
+        DOWNLOAD_DIR,
+        safe_filename,
+        as_attachment=True,
+        download_name=safe_filename
+    )

@@ -1,43 +1,57 @@
-from pytubefix.cli import on_progress
-from pytubefix import YouTube
 import ffmpeg
+from pathlib import Path
+from uuid import uuid4
+
+from pytubefix import YouTube
+from pytubefix.cli import on_progress
 
 
-def download_video(video_path: str, audio_path: str | None = None):
-    output_video_file = "video.mp4"
+BASE_DIR = Path(__file__).resolve().parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+
+
+def _ensure_download_dir() -> Path:
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    return DOWNLOAD_DIR
+
+
+def download_video(video_path: str, output_filename: str, audio_path: str | None = None):
+    output_video_file = DOWNLOAD_DIR / output_filename
 
     if audio_path:
         video_input = ffmpeg.input(video_path)
         audio_input = ffmpeg.input(audio_path)
         (
             ffmpeg
-            .output(video_input, audio_input, output_video_file, vcodec="copy", acodec="aac")
+            .output(video_input, audio_input, str(output_video_file), vcodec="copy", acodec="aac")
             .run(overwrite_output=True)
         )
     else:
         (
             ffmpeg
             .input(video_path)
-            .output(output_video_file, vcodec="copy", acodec="copy")
+            .output(str(output_video_file), vcodec="copy", acodec="copy")
             .run(overwrite_output=True)
         )
 
-    return output_video_file,
+    return output_filename,
 
 
-def download_audio(audio_path: str):
-    output_audio_file = "audio.mp3"
+def download_audio(audio_path: str, output_filename: str):
+    output_audio_file = DOWNLOAD_DIR / output_filename
     (
         ffmpeg.input(audio_path)
-        .output(output_audio_file, acodec="libmp3lame", audio_bitrate="192k")
+        .output(str(output_audio_file), acodec="libmp3lame", audio_bitrate="192k")
         .run(overwrite_output=True)
     )
 
-    return output_audio_file,
+    return output_filename,
 
 
 def download(url: str, mode: str):
+    _ensure_download_dir()
     yt = YouTube(url, on_progress_callback=on_progress)
+    file_id = uuid4().hex
 
     video_stream = (
         yt.streams
@@ -57,20 +71,33 @@ def download(url: str, mode: str):
     try:
         if mode == "video":
             if video_stream is None:
-                raise Exception("Erro ao encontrar stream de video")
+                raise ValueError("Erro ao encontrar stream de video")
 
-            video_path = video_stream.download(filename="video_original.mp4")
-            audio_path = audio_stream.download(filename="audio_original") if audio_stream else None
-            return download_video(video_path, audio_path)
+            video_path = video_stream.download(
+                output_path=str(DOWNLOAD_DIR),
+                filename=f"{file_id}_video_original.mp4"
+            )
+            if video_path is None:
+                raise ValueError("Erro ao baixar stream de video")
+
+            audio_path = (
+                audio_stream.download(output_path=str(DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
+                if audio_stream
+                else None
+            )
+            return download_video(video_path, f"{file_id}_video.mp4", audio_path)
 
         if mode == "audio":
             if audio_stream is None:
-                raise Exception("Erro ao encontrar stream de audio")
+                raise ValueError("Erro ao encontrar stream de audio")
 
-            audio_path = audio_stream.download(filename="audio_original")
-            return download_audio(audio_path)
+            audio_path = audio_stream.download(output_path=str(DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
+            if audio_path is None:
+                raise ValueError("Erro ao baixar stream de audio")
 
-        raise Exception("Modo invalido. Use 'video' ou 'audio'.")
+            return download_audio(audio_path, f"{file_id}_audio.mp3")
+
+        raise ValueError("Modo invalido. Use 'video' ou 'audio'.")
     except ffmpeg.Error as e:
         print(f"An error occurred: {e.stderr.decode('utf8')}")
         raise
