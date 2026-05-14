@@ -154,21 +154,9 @@ def _wait_until_file_is_ready(client: genai.Client, uploaded_file):
     raise ValueError("O Gemini demorou demais para processar o video.")
 
 
-def _summarize_video_with_gemini(video_path: Path, title: str, author: str) -> str:
-    client, model = _get_gemini_client()
-    mime_type = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
 
-    print("[ia-summary] Enviando arquivo para Gemini:", video_path)
-    print("[ia-summary] Mime type:", mime_type)
-
-    try:
-        uploaded_file = client.files.upload(
-            file=video_path,
-            config=types.UploadFileConfig(mime_type=mime_type),
-        )
-        uploaded_file = _wait_until_file_is_ready(client, uploaded_file)
-
-        prompt = f"""
+def _build_summary_prompt(title: str, author: str) -> str:
+    return f"""
 Assista ao video enviado e gere um resumo em portugues do Brasil.
 
 Titulo: {title}
@@ -180,6 +168,42 @@ Diga, de forma objetiva:
 - A ideia central em uma frase.
 """.strip()
 
+
+def _prepare_video_for_gemini(client: genai.Client, video_path: Path):
+    mime_type = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
+
+    print("[ia-summary] Enviando arquivo para Gemini:", video_path)
+    print("[ia-summary] Mime type:", mime_type)
+    uploaded_file = client.files.upload(
+        file=video_path,
+        config=types.UploadFileConfig(mime_type=mime_type),
+    )
+    return _wait_until_file_is_ready(client, uploaded_file)
+
+
+def _handle_gemini_error(error: Exception, model: str):
+    if _is_quota_error(error):
+        print("[ia-summary] Quota do Gemini excedida")
+        raise GeminiQuotaError(
+            "Quota do Gemini excedida. Tente novamente mais tarde ou configure outra chave/modelo."
+        ) from error
+
+    if _is_model_error(error):
+        print("[ia-summary] Modelo Gemini invalido ou indisponivel:", model)
+        raise GeminiModelError(
+            f"Modelo Gemini invalido ou indisponivel: {model}. Confira o nome em AI Studio > API keys > Model rate limits."
+        ) from error
+
+    print("[ia-summary] Erro Gemini:", type(error).__name__, error)
+    raise error
+
+def _summarize_video_with_gemini(video_path: Path, title: str, author: str) -> str:
+    client, model = _get_gemini_client()
+
+    try:
+        uploaded_file = _prepare_video_for_gemini(client, video_path)
+        prompt = _build_summary_prompt(title, author)
+
         print("[ia-summary] Pedindo resumo ao Gemini")
         response = client.models.generate_content(
             model=model,
@@ -187,23 +211,36 @@ Diga, de forma objetiva:
             config=types.GenerateContentConfig(temperature=0.2),
         )
     except Exception as error:
-        if _is_quota_error(error):
-            print("[ia-summary] Quota do Gemini excedida")
-            raise GeminiQuotaError(
-                "Quota do Gemini excedida. Tente novamente mais tarde ou configure outra chave/modelo."
-            ) from error
-
-        if _is_model_error(error):
-            print("[ia-summary] Modelo Gemini invalido ou indisponivel:", model)
-            raise GeminiModelError(
-                f"Modelo Gemini invalido ou indisponivel: {model}. Confira o nome em AI Studio > API keys > Model rate limits."
-            ) from error
-
-        print("[ia-summary] Erro Gemini:", type(error).__name__, error)
-        raise
+        _handle_gemini_error(error, model)
 
     print("[ia-summary] Resumo recebido")
     return response.text or ""
+
+
+def stream_youtube_video_summary(url: str):
+    print("[ia-summary-stream] Inicio do fluxo streaming")
+    video_path, metadata = _download_video(url)
+    client, model = _get_gemini_client()
+
+    try:
+        uploaded_file = _prepare_video_for_gemini(client, video_path)
+        prompt = _build_summary_prompt(metadata["title"], metadata["author"])
+
+        print("[ia-summary-stream] Pedindo resumo em streaming ao Gemini")
+        stream = client.models.generate_content_stream(
+            model=model,
+            contents=[prompt, uploaded_file],
+            config=types.GenerateContentConfig(temperature=0.2),
+        )
+
+        for chunk in stream:
+            text = getattr(chunk, "text", None)
+            if text:
+                yield text
+    except Exception as error:
+        _handle_gemini_error(error, model)
+
+    print("[ia-summary-stream] Fim do fluxo streaming")
 
 
 def summarize_youtube_video(url: str) -> dict:
@@ -222,3 +259,5 @@ def summarize_youtube_video(url: str) -> dict:
         "summary_source": "video_file",
         "summary": summary,
     }
+
+
