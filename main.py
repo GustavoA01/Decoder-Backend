@@ -1,4 +1,4 @@
-﻿from flask import Flask
+﻿from flask import Flask, jsonify
 from routes.file import file_bp
 from routes.summary import summary_bp
 
@@ -13,6 +13,27 @@ def add_cors_headers(response):
     response.headers["Cache-Control"] = "no-cache"
     response.headers["X-Accel-Buffering"] = "no"
     return response
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "status": "ok",
+        "message": "Decoder Backend is running",
+        "routes": [
+            "/health",
+            "/download",
+            "/get-file/<filename>",
+            "/ia-summary",
+            "/ia-summary-jobs",
+            "/ia-summary-jobs/<job_id>",
+        ],
+    }), 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
 
 
 app.register_blueprint(file_bp)
