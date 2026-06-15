@@ -72,12 +72,38 @@ def _is_model_error(error: Exception) -> bool:
     return "NOT_FOUND" in error_text or "404" in error_text or "not found for API version" in error_text
 
 
+
+def _resolution_value(stream) -> int:
+    resolution = getattr(stream, "resolution", None) or "0p"
+    try:
+        return int(resolution.replace("p", ""))
+    except ValueError:
+        return 0
+
+
+def _select_summary_stream(yt: YouTube):
+    streams = list(
+        yt.streams
+        .filter(progressive=True, file_extension="mp4")
+        .order_by("resolution")
+        .asc()
+    )
+
+    if not streams:
+        return None
+
+    preferred = [stream for stream in streams if 360 <= _resolution_value(stream) <= 480]
+    if preferred:
+        return preferred[0]
+
+    return streams[0]
+
 def _download_video(url: str) -> tuple[Path, dict]:
     print("[ia-summary] Abrindo YouTube")
     yt = YouTube(url)
     video_key = _get_video_key(url)
     video_dir = _ensure_video_dir()
-    output_path = video_dir / f"{video_key}.mp4"
+    output_path = video_dir / f"{video_key}_summary.mp4"
 
     if output_path.exists():
         print("[ia-summary] Video ja existe, reutilizando:", output_path)
@@ -88,14 +114,8 @@ def _download_video(url: str) -> tuple[Path, dict]:
             "author": yt.author,
         }
 
-    print("[ia-summary] Procurando stream MP4 progressiva")
-    stream = (
-        yt.streams
-        .filter(progressive=True, file_extension="mp4")
-        .order_by("resolution")
-        .desc()
-        .first()
-    )
+    print("[ia-summary] Procurando stream MP4 leve para resumo")
+    stream = _select_summary_stream(yt)
 
     if stream is None:
         print("[ia-summary] Stream progressiva nao encontrada; tentando MP4 qualquer")
@@ -103,9 +123,12 @@ def _download_video(url: str) -> tuple[Path, dict]:
             yt.streams
             .filter(file_extension="mp4")
             .order_by("resolution")
-            .desc()
+            .asc()
             .first()
         )
+
+    if stream is not None:
+        print("[ia-summary] Stream escolhida:", getattr(stream, "resolution", None), getattr(stream, "mime_type", None))
 
     if stream is None:
         raise ValueError(
@@ -157,15 +180,32 @@ def _wait_until_file_is_ready(client: genai.Client, uploaded_file):
 
 def _build_summary_prompt(title: str, author: str) -> str:
     return f"""
-Assista ao video enviado e gere um resumo em portugues do Brasil.
+Voce e um analista de videos. Assista ao video enviado e responda em portugues do Brasil.
 
 Titulo: {title}
 Canal: {author}
 
-Diga, de forma objetiva:
-- O que acontece no video.
-- Os pontos principais.
-- A ideia central em uma frase.
+Regras importantes:
+- Retorne somente Markdown.
+- Nao comece com "Aqui esta" ou frases de apresentacao.
+- Seja especifico sobre cenas, acontecimentos e contexto visual.
+- Se algo nao estiver claro no video, diga isso sem inventar.
+- Use frases curtas e organizadas.
+
+Formato obrigatorio:
+
+## Resumo
+Escreva um paragrafo de 4 a 6 linhas explicando o que acontece no video.
+
+## O que acontece no video
+- Liste os acontecimentos principais em ordem logica.
+- Cada item deve ser concreto e facil de entender.
+
+## Pontos principais
+- Liste de 3 a 6 pontos importantes.
+
+## Ideia central
+Uma frase direta resumindo a mensagem ou proposta do video.
 """.strip()
 
 
@@ -217,32 +257,6 @@ def _summarize_video_with_gemini(video_path: Path, title: str, author: str) -> s
     return response.text or ""
 
 
-def stream_youtube_video_summary(url: str):
-    print("[ia-summary-stream] Inicio do fluxo streaming")
-    video_path, metadata = _download_video(url)
-    client, model = _get_gemini_client()
-
-    try:
-        uploaded_file = _prepare_video_for_gemini(client, video_path)
-        prompt = _build_summary_prompt(metadata["title"], metadata["author"])
-
-        print("[ia-summary-stream] Pedindo resumo em streaming ao Gemini")
-        stream = client.models.generate_content_stream(
-            model=model,
-            contents=[prompt, uploaded_file],
-            config=types.GenerateContentConfig(temperature=0.2),
-        )
-
-        for chunk in stream:
-            text = getattr(chunk, "text", None)
-            if text:
-                yield text
-    except Exception as error:
-        _handle_gemini_error(error, model)
-
-    print("[ia-summary-stream] Fim do fluxo streaming")
-
-
 def summarize_youtube_video(url: str) -> dict:
     print("[ia-summary] Inicio do fluxo basico")
     video_path, metadata = _download_video(url)
@@ -259,5 +273,7 @@ def summarize_youtube_video(url: str) -> dict:
         "summary_source": "video_file",
         "summary": summary,
     }
+
+
 
 
