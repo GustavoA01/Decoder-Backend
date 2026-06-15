@@ -22,6 +22,10 @@ class GeminiModelError(Exception):
     pass
 
 
+class NoCaptionError(Exception):
+    pass
+
+
 def _ensure_video_dir() -> Path:
     IA_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     return IA_VIDEO_DIR
@@ -72,6 +76,22 @@ def _is_model_error(error: Exception) -> bool:
     return "NOT_FOUND" in error_text or "404" in error_text or "not found for API version" in error_text
 
 
+def _handle_gemini_error(error: Exception, model: str):
+    if _is_quota_error(error):
+        print("[ia-summary] Quota do Gemini excedida")
+        raise GeminiQuotaError(
+            "Quota do Gemini excedida. Tente novamente mais tarde ou configure outra chave/modelo."
+        ) from error
+
+    if _is_model_error(error):
+        print("[ia-summary] Modelo Gemini invalido ou indisponivel:", model)
+        raise GeminiModelError(
+            f"Modelo Gemini invalido ou indisponivel: {model}. Confira o nome em AI Studio > API keys > Model rate limits."
+        ) from error
+
+    print("[ia-summary] Erro Gemini:", type(error).__name__, error)
+    raise error
+
 
 def _resolution_value(stream) -> int:
     resolution = getattr(stream, "resolution", None) or "0p"
@@ -98,21 +118,24 @@ def _select_summary_stream(yt: YouTube):
 
     return streams[0]
 
-def _download_video(url: str) -> tuple[Path, dict]:
-    print("[ia-summary] Abrindo YouTube")
-    yt = YouTube(url)
-    video_key = _get_video_key(url)
+
+def _video_metadata(yt: YouTube, url: str, video_key: str) -> dict:
+    return {
+        "video_id": video_key,
+        "url": url,
+        "title": yt.title,
+        "author": yt.author,
+    }
+
+
+def _download_video(yt: YouTube, url: str, video_key: str) -> tuple[Path, dict]:
     video_dir = _ensure_video_dir()
     output_path = video_dir / f"{video_key}_summary.mp4"
+    metadata = _video_metadata(yt, url, video_key)
 
     if output_path.exists():
         print("[ia-summary] Video ja existe, reutilizando:", output_path)
-        return output_path, {
-            "video_id": video_key,
-            "url": url,
-            "title": yt.title,
-            "author": yt.author,
-        }
+        return output_path, metadata
 
     print("[ia-summary] Procurando stream MP4 leve para resumo")
     stream = _select_summary_stream(yt)
@@ -131,22 +154,42 @@ def _download_video(url: str) -> tuple[Path, dict]:
         print("[ia-summary] Stream escolhida:", getattr(stream, "resolution", None), getattr(stream, "mime_type", None))
 
     if stream is None:
-        raise ValueError(
-            "Nao foi possivel encontrar um video MP4 para baixar.")
+        raise ValueError("Nao foi possivel encontrar um video MP4 para baixar.")
 
     print("[ia-summary] Baixando video:", yt.title)
-    downloaded_path = stream.download(
-        output_path=str(video_dir), filename=output_path.name)
+    downloaded_path = stream.download(output_path=str(video_dir), filename=output_path.name)
     if downloaded_path is None:
         raise ValueError("Erro ao baixar o video.")
 
     print("[ia-summary] Video baixado em:", downloaded_path)
-    return Path(downloaded_path), {
-        "video_id": video_key,
-        "url": url,
-        "title": yt.title,
-        "author": yt.author,
-    }
+    return Path(downloaded_path), metadata
+
+
+def _get_caption_text(yt: YouTube) -> tuple[str, str]:
+    print("[ia-summary] Tentando usar legenda antes de baixar video")
+    captions = yt.captions
+    if not captions:
+        raise NoCaptionError("Esse video nao possui legenda disponivel.")
+
+    preferred_codes = ("pt-BR", "pt", "a.pt", "en", "a.en")
+    selected_caption = None
+
+    for code in preferred_codes:
+        selected_caption = captions.get(code)
+        if selected_caption:
+            print("[ia-summary] Legenda selecionada:", code)
+            break
+
+    if selected_caption is None:
+        selected_caption = next(iter(captions.values()))
+        print("[ia-summary] Usando primeira legenda disponivel:", selected_caption.code)
+
+    caption_text = selected_caption.generate_txt_captions()
+    if not caption_text:
+        raise NoCaptionError("Nao foi possivel extrair texto da legenda desse video.")
+
+    print("[ia-summary] Legenda extraida. Tamanho:", len(caption_text))
+    return caption_text, selected_caption.code
 
 
 def _file_state_name(uploaded_file) -> str | None:
@@ -177,32 +220,54 @@ def _wait_until_file_is_ready(client: genai.Client, uploaded_file):
     raise ValueError("O Gemini demorou demais para processar o video.")
 
 
+def _build_summary_prompt(title: str, author: str, transcript: str | None = None, content_type: str | None = None) -> str:
+    source_instruction = "Assista ao video enviado" if transcript is None else "Use a transcricao abaixo"
+    transcript_block = "" if transcript is None else f"\n\nTranscricao:\n{transcript}"
 
-def _build_summary_prompt(title: str, author: str) -> str:
+    selected_type = (content_type or "auto").strip().lower()
+
     return f"""
-Voce e um analista de videos. Assista ao video enviado e responda em portugues do Brasil.
+Voce e um analista de videos. {source_instruction} e responda em portugues do Brasil.
 
 Titulo: {title}
 Canal: {author}
+Tipo informado pelo usuario: {selected_type}{transcript_block}
 
 Regras importantes:
 - Retorne somente Markdown.
-- Nao comece com "Aqui esta" ou frases de apresentacao.
-- Seja especifico sobre cenas, acontecimentos e contexto visual.
-- Se algo nao estiver claro no video, diga isso sem inventar.
-- Use frases curtas e organizadas.
+- Nao comece com "Aqui está" ou frases de apresentação.
+- Evite repetir a mesma informacão em seções diferentes.
+- Escolha o nível de profundidade de acordo com o tipo/conteúdo do video.
+- Seja especifico sobre acontecimentos, falas e contexto.
+- Se estiver usando transcricao, nao invente detalhes visuais que nao aparecem no texto.
+- Se estiver usando video, inclua contexto visual quando for relevante.
+- Use frases curtas, naturais e organizadas.
 
-Formato obrigatorio:
+Como decidir o formato:
+- Se o tipo for "auto", classifique mentalmente o video antes de responder.
+- Para videos simples, curtos, factuais, gameplay casual, reacts leves, trailers ou videos com poucas ideias novas, use o Formato A.
+- Para politica, educacao, tutorial, debate, ensaio, review critica, analise, opiniao forte ou videos com argumentos importantes, use o Formato B.
+- Se o usuario informou um tipo especifico, respeite esse tipo acima da classificacao automatica.
 
-## Resumo
-Escreva um paragrafo de 4 a 6 linhas explicando o que acontece no video.
+Formato A - video simples/factual:
 
-## O que acontece no video
-- Liste os acontecimentos principais em ordem logica.
-- Cada item deve ser concreto e facil de entender.
+## Resumo detalhado
+Escreva 1 ou 2 paragrafos bem explicados, sem bullets, cobrindo as ideias principais sem repetir.
 
-## Pontos principais
-- Liste de 3 a 6 pontos importantes.
+## Ideia central
+Uma frase direta resumindo a mensagem ou proposta do video.
+
+Formato B - video analitico/opinativo/educacional:
+
+## Resumo detalhado
+Escreva 1 ou 2 paragrafos que ja misturem o que aconteceu com por que isso importa. Nao crie uma lista repetindo o resumo.
+
+## Analise
+- Liste de 3 a 5 interpretacoes, conclusoes ou implicacoes do conteudo.
+- Cada item deve acrescentar algo novo, nao repetir o resumo.
+- Em videos de politica/debate, destaque posicoes, conflitos, interesses e consequencias.
+- Em videos de aprendizado/tutorial, destaque conceitos, passos importantes e aplicacoes praticas.
+- Em reviews/analises, destaque criterios, argumentos e avaliacao final.
 
 ## Ideia central
 Uma frase direta resumindo a mensagem ou proposta do video.
@@ -221,30 +286,32 @@ def _prepare_video_for_gemini(client: genai.Client, video_path: Path):
     return _wait_until_file_is_ready(client, uploaded_file)
 
 
-def _handle_gemini_error(error: Exception, model: str):
-    if _is_quota_error(error):
-        print("[ia-summary] Quota do Gemini excedida")
-        raise GeminiQuotaError(
-            "Quota do Gemini excedida. Tente novamente mais tarde ou configure outra chave/modelo."
-        ) from error
+def _summarize_caption_with_gemini(title: str, author: str, transcript: str, content_type: str | None = None) -> str:
+    client, model = _get_gemini_client()
 
-    if _is_model_error(error):
-        print("[ia-summary] Modelo Gemini invalido ou indisponivel:", model)
-        raise GeminiModelError(
-            f"Modelo Gemini invalido ou indisponivel: {model}. Confira o nome em AI Studio > API keys > Model rate limits."
-        ) from error
+    try:
+        prompt = _build_summary_prompt(title, author, transcript, content_type)
+        print("[ia-summary] Pedindo resumo ao Gemini via legenda")
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2),
+        )
+    except Exception as error:
+        _handle_gemini_error(error, model)
 
-    print("[ia-summary] Erro Gemini:", type(error).__name__, error)
-    raise error
+    print("[ia-summary] Resumo por legenda recebido")
+    return response.text or ""
 
-def _summarize_video_with_gemini(video_path: Path, title: str, author: str) -> str:
+
+def _summarize_video_with_gemini(video_path: Path, title: str, author: str, content_type: str | None = None) -> str:
     client, model = _get_gemini_client()
 
     try:
         uploaded_file = _prepare_video_for_gemini(client, video_path)
-        prompt = _build_summary_prompt(title, author)
+        prompt = _build_summary_prompt(title, author, content_type=content_type)
 
-        print("[ia-summary] Pedindo resumo ao Gemini")
+        print("[ia-summary] Pedindo resumo ao Gemini via video")
         response = client.models.generate_content(
             model=model,
             contents=[prompt, uploaded_file],
@@ -253,24 +320,70 @@ def _summarize_video_with_gemini(video_path: Path, title: str, author: str) -> s
     except Exception as error:
         _handle_gemini_error(error, model)
 
-    print("[ia-summary] Resumo recebido")
+    print("[ia-summary] Resumo por video recebido")
     return response.text or ""
 
 
-def summarize_youtube_video(url: str) -> dict:
-    print("[ia-summary] Inicio do fluxo basico")
-    video_path, metadata = _download_video(url)
+def summarize_youtube_video(url: str, status_callback=None, content_type: str | None = None) -> dict:
+    print("[ia-summary] Inicio do fluxo legenda -> video")
+    if status_callback:
+        status_callback("Verificando video")
+
+    video_key = _get_video_key(url)
+
+    print("[ia-summary] Abrindo YouTube")
+    yt = YouTube(url)
+    metadata = _video_metadata(yt, url, video_key)
+
+    try:
+        if status_callback:
+            status_callback("Procurando legenda")
+
+        transcript, caption_code = _get_caption_text(yt)
+
+        if status_callback:
+            status_callback("Escrevendo resumo")
+
+        summary = _summarize_caption_with_gemini(yt.title, yt.author, transcript, content_type)
+        if status_callback:
+            status_callback("Resumo finalizado")
+
+        print("[ia-summary] Fim do fluxo usando legenda")
+        return {
+            **metadata,
+            "caption_code": caption_code,
+            "video_file": None,
+            "summary_source": "caption",
+            "content_type": content_type or "auto",
+            "summary": summary,
+        }
+    except NoCaptionError as error:
+        print("[ia-summary] Legenda indisponivel, usando video:", error)
+        if status_callback:
+            status_callback("Legenda indisponivel. Analisando video, isso pode demorar cerca de 1 minuto")
+
+    video_path, metadata = _download_video(yt, url, video_key)
+
+    if status_callback:
+        status_callback("Enviando video para IA. Pode demorar cerca de 1 minuto")
+
     summary = _summarize_video_with_gemini(
         video_path=video_path,
         title=metadata["title"],
         author=metadata["author"],
+        content_type=content_type,
     )
 
-    print("[ia-summary] Fim do fluxo basico")
+    if status_callback:
+        status_callback("Resumo finalizado")
+
+    print("[ia-summary] Fim do fluxo usando video")
     return {
         **metadata,
+        "caption_code": None,
         "video_file": video_path.name,
         "summary_source": "video_file",
+        "content_type": content_type or "auto",
         "summary": summary,
     }
 
