@@ -1,4 +1,5 @@
-﻿from threading import Lock, Thread
+﻿import traceback
+from threading import Lock, Thread
 from uuid import uuid4
 
 from flask import Blueprint, jsonify, request
@@ -61,7 +62,7 @@ def _error_response(error):
     if isinstance(error, GeminiModelError):
         return str(error), 400
 
-    return "Erro interno ao gerar resumo com IA", 500
+    return f"{type(error).__name__}: {error}", 500
 
 
 def _run_summary_job(job_id: str, url: str, content_type: str):
@@ -85,6 +86,7 @@ def _run_summary_job(job_id: str, url: str, content_type: str):
     except Exception as error:
         error_message, status_code = _error_response(error)
         print("[ia-summary-job] Erro:", type(error).__name__, error)
+        traceback.print_exc()
         _set_job(
             job_id,
             status="error",
@@ -122,6 +124,7 @@ def ia_summary():
     except Exception as error:
         error_message, status_code = _error_response(error)
         print("[ia-summary] Erro:", type(error).__name__, error)
+        traceback.print_exc()
         return jsonify({"error": error_message}), status_code
 
 
@@ -162,4 +165,6 @@ def get_ia_summary_job(job_id):
         "job_id": job_id,
         **job,
     }), 200
+
+
 
