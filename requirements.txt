@@ -1,6 +1,8 @@
-Flask==3.1.3
+﻿Flask==3.1.3
 pytubefix
 python-dotenv
 google-genai
 ffmpeg-python
 gunicorn
+nodejs-wheel-binaries
+

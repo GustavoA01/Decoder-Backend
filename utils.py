@@ -1,4 +1,4 @@
-import ffmpeg
+﻿import ffmpeg
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,7 +50,7 @@ def download_audio(audio_path: str, output_filename: str):
 
 def download(url: str, mode: str):
     _ensure_download_dir()
-    yt = YouTube(url, on_progress_callback=on_progress)
+    yt = YouTube(url, client="WEB", on_progress_callback=on_progress)
     file_id = uuid4().hex
 
     video_stream = (
@@ -111,3 +111,4 @@ def download(url: str, mode: str):
     # )
 
     # return response.text
+

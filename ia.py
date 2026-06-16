@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from pytubefix import YouTube
+from pytubefix.exceptions import BotDetection, PoTokenRequired
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -19,6 +20,10 @@ class GeminiQuotaError(Exception):
 
 
 class GeminiModelError(Exception):
+    pass
+
+
+class YouTubeAccessError(Exception):
     pass
 
 
@@ -74,6 +79,21 @@ def _is_quota_error(error: Exception) -> bool:
 def _is_model_error(error: Exception) -> bool:
     error_text = str(error)
     return "NOT_FOUND" in error_text or "404" in error_text or "not found for API version" in error_text
+
+
+def _is_youtube_access_error(error: Exception) -> bool:
+    error_text = str(error).lower()
+    return isinstance(error, (BotDetection, PoTokenRequired)) or "detected as a bot" in error_text or "po_token" in error_text
+
+
+def _handle_youtube_error(error: Exception):
+    if _is_youtube_access_error(error):
+        print("[ia-summary] YouTube bloqueou a requisicao:", type(error).__name__, error)
+        raise YouTubeAccessError(
+            "O YouTube bloqueou a requisicao feita pelo servidor. Tente novamente; se persistir, sera necessario configurar PO Token/proxy ou outro provedor."
+        ) from error
+
+    raise error
 
 
 def _handle_gemini_error(error: Exception, model: str):
@@ -331,9 +351,12 @@ def summarize_youtube_video(url: str, status_callback=None, content_type: str | 
 
     video_key = _get_video_key(url)
 
-    print("[ia-summary] Abrindo YouTube")
-    yt = YouTube(url)
-    metadata = _video_metadata(yt, url, video_key)
+    print("[ia-summary] Abrindo YouTube com client WEB")
+    try:
+        yt = YouTube(url, client="WEB")
+        metadata = _video_metadata(yt, url, video_key)
+    except Exception as error:
+        _handle_youtube_error(error)
 
     try:
         if status_callback:
@@ -357,12 +380,17 @@ def summarize_youtube_video(url: str, status_callback=None, content_type: str | 
             "content_type": content_type or "auto",
             "summary": summary,
         }
+    except (BotDetection, PoTokenRequired) as error:
+        _handle_youtube_error(error)
     except NoCaptionError as error:
         print("[ia-summary] Legenda indisponivel, usando video:", error)
         if status_callback:
             status_callback("Legenda indisponivel. Analisando video, isso pode demorar cerca de 1 minuto")
 
-    video_path, metadata = _download_video(yt, url, video_key)
+    try:
+        video_path, metadata = _download_video(yt, url, video_key)
+    except Exception as error:
+        _handle_youtube_error(error)
 
     if status_callback:
         status_callback("Enviando video para IA. Pode demorar cerca de 1 minuto")
@@ -386,6 +414,8 @@ def summarize_youtube_video(url: str, status_callback=None, content_type: str | 
         "content_type": content_type or "auto",
         "summary": summary,
     }
+
+
 
 
 

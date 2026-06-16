@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from flask import Blueprint, jsonify, request
 
-from ia import GeminiModelError, GeminiQuotaError, summarize_youtube_video
+from ia import GeminiModelError, GeminiQuotaError, YouTubeAccessError, summarize_youtube_video
 
 summary_bp = Blueprint("summary", __name__)
 
@@ -165,6 +165,7 @@ def get_ia_summary_job(job_id):
         "job_id": job_id,
         **job,
     }), 200
+
 
 
 
