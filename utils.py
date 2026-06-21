@@ -50,20 +50,10 @@ def download_audio(audio_path: str, output_filename: str):
     return output_filename,
 
 
-def token_verifier(*args):
-    visitor_data = os.getenv("YOUTUBE_VISITOR_DATA") or ""
-    po_token = os.getenv("YOUTUBE_PO_TOKEN") or ""
-    return visitor_data, po_token
-
-
 def download(url: str, mode: str):
     _ensure_download_dir()
 
-    yt = YouTube(
-        url, client="WEB", on_progress_callback=on_progress,
-        use_po_token=True,
-        po_token_verifier=token_verifier
-    )
+    yt = YouTube(url, client="ANDROID", on_progress_callback=on_progress)
 
     file_id = uuid4().hex
 
