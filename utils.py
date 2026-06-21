@@ -1,13 +1,15 @@
 ﻿import ffmpeg
 from pathlib import Path
 from uuid import uuid4
-
+import os
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
+visitor_data = os.getenv("YOUTUBE_VISITOR_DATA")
+po_token = os.getenv("YOUTUBE_PO_TOKEN")
 
 
 def _ensure_download_dir() -> Path:
@@ -48,9 +50,21 @@ def download_audio(audio_path: str, output_filename: str):
     return output_filename,
 
 
+def token_verifier(*args):
+    visitor_data = os.getenv("YOUTUBE_VISITOR_DATA") or ""
+    po_token = os.getenv("YOUTUBE_PO_TOKEN") or ""
+    return visitor_data, po_token
+
+
 def download(url: str, mode: str):
     _ensure_download_dir()
-    yt = YouTube(url, client="WEB", on_progress_callback=on_progress)
+
+    yt = YouTube(
+        url, client="WEB", on_progress_callback=on_progress,
+        use_po_token=True,
+        po_token_verifier=token_verifier
+    )
+
     file_id = uuid4().hex
 
     video_stream = (
@@ -81,7 +95,8 @@ def download(url: str, mode: str):
                 raise ValueError("Erro ao baixar stream de video")
 
             audio_path = (
-                audio_stream.download(output_path=str(DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
+                audio_stream.download(output_path=str(
+                    DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
                 if audio_stream
                 else None
             )
@@ -91,7 +106,8 @@ def download(url: str, mode: str):
             if audio_stream is None:
                 raise ValueError("Erro ao encontrar stream de audio")
 
-            audio_path = audio_stream.download(output_path=str(DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
+            audio_path = audio_stream.download(output_path=str(
+                DOWNLOAD_DIR), filename=f"{file_id}_audio_original")
             if audio_path is None:
                 raise ValueError("Erro ao baixar stream de audio")
 
@@ -111,4 +127,3 @@ def download(url: str, mode: str):
     # )
 
     # return response.text
-
